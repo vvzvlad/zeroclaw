@@ -3025,21 +3025,40 @@ done
 
     #[tokio::test]
     async fn call_tool_replays_once_after_stale_session() {
-        use wiremock::matchers::{body_partial_json, method};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::matchers::{body_partial_json, header, method};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
         let server = MockServer::start().await;
 
-        // initialize → 200 + session header. Hit twice: initial connect plus the
-        // reconnect that follows the stale-session error.
+        // Both handshakes must start without a session id: the initial connect
+        // gets `sess-1`, the reconnect after the stale-session error gets
+        // `sess-2`. An initialize that still carries the expired id matches
+        // neither mock.
+        let no_session_header = |req: &Request| !req.headers.contains_key("Mcp-Session-Id");
         Mock::given(method("POST"))
             .and(body_partial_json(json!({"method": "initialize"})))
+            .and(no_session_header)
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("Mcp-Session-Id", "sess-1")
                     .set_body_json(json!({"jsonrpc": "2.0", "id": 1, "result": {}})),
             )
-            .expect(2)
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "initialize"})))
+            .and(no_session_header)
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Mcp-Session-Id", "sess-2")
+                    .set_body_json(json!({"jsonrpc": "2.0", "id": 1, "result": {}})),
+            )
+            .with_priority(2)
+            .expect(1)
             .mount(&server)
             .await;
 
@@ -3067,22 +3086,22 @@ done
         // the client re-establishes the session and replays the call once.
         Mock::given(method("POST"))
             .and(body_partial_json(json!({"method": "tools/call"})))
+            .and(header("Mcp-Session-Id", "sess-1"))
             .respond_with(ResponseTemplate::new(404))
-            .up_to_n_times(1)
-            .with_priority(1)
             .expect(1)
             .mount(&server)
             .await;
 
-        // The replayed call (next request id) on the fresh session succeeds.
+        // The replayed call (next request id) succeeds only on the fresh
+        // session; a replay that still carries `sess-1` gets 404 again.
         Mock::given(method("POST"))
             .and(body_partial_json(json!({"method": "tools/call", "id": 4})))
+            .and(header("Mcp-Session-Id", "sess-2"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "jsonrpc": "2.0",
                 "id": 4,
                 "result": {"content": [{"type": "text", "text": "ok"}]}
             })))
-            .with_priority(2)
             .expect(1)
             .mount(&server)
             .await;
