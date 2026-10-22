@@ -3023,8 +3023,7 @@ done
         }
     }
 
-    #[tokio::test]
-    async fn call_tool_replays_once_after_stale_session() {
+    async fn assert_call_tool_replays_once_after_stale_session(stale_status: u16) {
         use wiremock::matchers::{body_partial_json, header, method};
         use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -3081,19 +3080,20 @@ done
             .mount(&server)
             .await;
 
-        // tools/call → 404 (stale session). A Streamable HTTP server answers 404
-        // only for a session it has terminated, so it did not execute the call:
-        // the client re-establishes the session and replays the call once.
+        // tools/call → `stale_status` (stale session). The transport reads it,
+        // on a request that carried a session id, as a terminated session that
+        // did not execute the call: the client re-establishes the session and
+        // replays the call once.
         Mock::given(method("POST"))
             .and(body_partial_json(json!({"method": "tools/call"})))
             .and(header("Mcp-Session-Id", "sess-1"))
-            .respond_with(ResponseTemplate::new(404))
+            .respond_with(ResponseTemplate::new(stale_status))
             .expect(1)
             .mount(&server)
             .await;
 
         // The replayed call (next request id) succeeds only on the fresh
-        // session; a replay that still carries `sess-1` gets 404 again.
+        // session; a replay that still carries `sess-1` is rejected again.
         Mock::given(method("POST"))
             .and(body_partial_json(json!({"method": "tools/call", "id": 4})))
             .and(header("Mcp-Session-Id", "sess-2"))
@@ -3120,6 +3120,19 @@ done
             "session re-established once"
         );
         server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn call_tool_replays_once_after_stale_session() {
+        assert_call_tool_replays_once_after_stale_session(404).await;
+    }
+
+    /// 410 Gone is not part of the MCP session contract, but the transport
+    /// accepts it as the same stale-session signal, so it must take the same
+    /// replay path as 404.
+    #[tokio::test]
+    async fn call_tool_replays_once_after_gone_session() {
+        assert_call_tool_replays_once_after_stale_session(410).await;
     }
 
     #[tokio::test]

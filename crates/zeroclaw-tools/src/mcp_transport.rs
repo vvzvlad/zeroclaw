@@ -1277,9 +1277,11 @@ impl SharedMcpTransportConn for HttpTransport {
             {
                 // A Streamable HTTP server that has terminated a session MUST
                 // answer every request carrying that session id with 404 (MCP
-                // spec, Session Management); 410 is accepted as the same signal.
-                // The server rejected the request without executing it, so the
-                // outcome is known and the caller may replay it after
+                // spec, Session Management). The spec does not define 410 Gone;
+                // it is accepted for servers that report an expired session as
+                // Gone, on the assumption that such a server, like a 404 one,
+                // rejected the request without executing it. Either way the
+                // outcome is known and the caller may replay the request after
                 // re-establishing the session.
                 lifecycle.mark_rejected_unexecuted();
                 return Err(McpTransportError::StaleSession {
